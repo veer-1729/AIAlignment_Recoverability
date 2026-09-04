@@ -198,3 +198,67 @@ state. A weaker intervention would restore that variation, which is what a Stage
 probe most needs to predict.
 
 Both remain unauthorized pending review.
+
+---
+
+## 10. Stage 2 pilot — do activations beat the observable features?
+
+Residual-stream activations extracted for all 332 Arm B checkpoints by replaying
+the stored prompts through a forward pass. No environment re-run, 37 seconds,
+**V10 re-verified on every prompt, zero tokenisation mismatches**. Linear probes
+fit on held-out *games*, three ways per target.
+
+| Target | 26-D features | Best activations | Δ | metric |
+| --- | --- | --- | --- | --- |
+| **τ — intervention advantage** | 0.192 | **0.504** (L8) | **+0.312** | R² |
+| `Q_continue` | 0.334 | **0.533** (L24) | **+0.199** | R² |
+| continue succeeds | 0.963 | 0.963 | +0.000 | macro F1 |
+| `Q_intervene` | 0.658 | 0.574 (L8) | −0.084 | R² |
+| oracle action | 0.880 | 0.793 (L24) | −0.086 | macro F1 |
+
+**The split is interpretable, not noise.** Activations win decisively on the two
+quantities that depend on *the agent's own trajectory* — τ and `Q_continue` — and
+lose on `Q_intervene`, which depends on what the *expert* will do from that state.
+The residual stream encodes the model's own situation, not another policy's
+prospects. That is the result reading the way the hypothesis predicts.
+
+τ is the quantity the programme is about, and it shows the largest gap. Adding the
+26 features on top of activations moves it 0.504 → 0.506: **activations subsume
+the handcrafted features** rather than complementing them.
+
+Two targets sit near ceiling on the baseline (continue-success 0.963, oracle
+action 0.880), so their flat/negative deltas carry little information.
+
+**Caveat:** 196 train / 72 test checkpoints against 3,584 activation dimensions,
+with regularisation selected on 64 validation points. The deltas are large enough
+to read through that, but this is a pilot and the honest response is more data.
+
+## 11. Variance diagnostics
+
+| Quantity | Mean | SD | Range |
+| --- | --- | --- | --- |
+| `Q_continue` | −0.701 | 0.919 | [−1.49, 0.99] |
+| `Q_intervene` | 0.389 | **0.845** | [−1.47, 0.94] |
+| τ | 1.090 | 1.020 | [−0.06, 2.40] |
+| expert success | 0.764 | 0.397 | [0.00, 1.00] |
+
+**The intervention is not constant.** `Q_I` has SD 0.845 across nearly the full
+utility range — essentially matching `Q_C`'s 0.919. The earlier inference from its
+0.76 mean was wrong; a mean never said whether it varied.
+
+**τ is not a restatement of the obvious covariates.** Task type alone leaves 73%
+of its variance, step index 76%, the two jointly still 54%.
+
+**Cost of a single expert draw, measured.** The expert's outcome varies across
+seeds on 38/332 checkpoints. Had one expert branch been run instead of five, the
+oracle label would have flipped on **4.0%** of cases (66/1,660) — small enough
+that the headline split survives, large enough to justify training probes on Arm B.
+
+## 12. Revised recommendation
+
+**Scale the dataset.** The pilot found signal where the programme needs it, and
+the binding constraint is now 196 training checkpoints against 3,584 dimensions —
+not the experimental design. Gate B ran in 64 minutes, so ~2k checkpoints is hours.
+
+**The intervention ladder is not indicated.** `Q_I` is not degenerate. That option
+stays in reserve.
