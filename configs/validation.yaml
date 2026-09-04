@@ -26,10 +26,15 @@ serving:
   model: Qwen/Qwen2.5-7B-Instruct
   api_key: EMPTY
 
+# Admissible commands are SHOWN. Hiding them (the ReAct convention, and our
+# original default) produced 0% base success: the agent navigates correctly but
+# invents object-interaction syntax. Showing them took Arm A from 0/6 to 2/6 and
+# the admissible rate from 13.7% to 46.1%, while preserving the paper-stated
+# 24-token action budget -- which act->react would have broken.
 scaffold:
   mode: act
   n_shots: 2
-  show_admissible_commands: false
+  show_admissible_commands: true
   max_action_tokens: 24
   max_confidence_tokens: 8
 
@@ -40,7 +45,11 @@ arms:
     temperature: 0.0
     n_replicates: 1
   - name: B_montecarlo
-    temperature: 0.7
+    # 0.3, not the 0.7 the plan guessed. Measured: at 0.7 the agent scored 0/6 --
+    # one bad sample poisons a 50-step trajectory. Of the candidates that stayed
+    # in band, 0.3 was the only one with non-zero outcome variance across seeds
+    # (2/12 vs 0/12 at 0.5), which is the property Qhat actually needs.
+    temperature: 0.3
     n_replicates: 5
 
 rollouts:
