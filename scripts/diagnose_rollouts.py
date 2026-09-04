@@ -50,11 +50,24 @@ def main() -> int:
             continue
         n = len(all_steps)
 
-        # THE discriminating metric.
-        admissible = sum(
-            1 for s in all_steps
-            if s["action"] and s["action"] in (s.get("admissible_commands") or [])
-        )
+        # THE discriminating metric -- and the indexing here is the whole point.
+        #
+        # step_record stores the env state AFTER the action executed, so
+        # steps[i]["admissible_commands"] is the post-action set. The action was
+        # chosen against the PRE-action set: initial for i=0, steps[i-1] after
+        # that. Comparing against the post-action set understates the admissible
+        # rate badly (it read 1.3% on Gate A) and would send us chasing a
+        # prompting bug that may not exist.
+        def pre_admissible(rollout, i):
+            if i == 0:
+                return rollout["initial"].get("admissible_commands") or []
+            return rollout["steps"][i - 1].get("admissible_commands") or []
+
+        pairs = [
+            (s, pre_admissible(r, i))
+            for r in rs for i, s in enumerate(r["steps"])
+        ]
+        admissible = sum(1 for s, adm in pairs if s["action"] and s["action"] in adm)
         empty = sum(1 for s in all_steps if not s["action"])
         nothing = sum(1 for s in all_steps if s.get("nothing_happens"))
         print("  steps total: {}".format(n))
@@ -78,6 +91,16 @@ def main() -> int:
         for s in all_steps[: args.samples]:
             print("    raw={!r}\n      -> parsed={!r}\n      -> obs={!r}".format(
                 s.get("raw_completion", "")[:120], s["action"], s["obs"][:110]))
+
+        # Side by side: what the model said vs what was actually on offer.
+        # This is what distinguishes "wrong syntax" from "wrong object".
+        print("\n  ACTION vs the commands actually available at that moment:")
+        for s, adm in pairs[: args.samples + 2]:
+            hit = "ADMISSIBLE" if s["action"] in adm else "not admissible"
+            gotos = [c for c in adm if c.startswith("go to")][:3]
+            other = [c for c in adm if not c.startswith("go to")][:5]
+            print("    said {!r}  -> {}".format(s["action"], hit))
+            print("      available ({}): {} ... | {}".format(len(adm), gotos, other))
 
         shortest = min(rs, key=lambda r: r["n_steps"])
         if shortest["n_steps"] <= 5:
