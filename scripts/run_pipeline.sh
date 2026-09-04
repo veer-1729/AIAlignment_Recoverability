@@ -34,6 +34,12 @@ for arm in $ARMS; do
 done
 
 echo "########## VALIDATE ##########"
-python scripts/04_validate.py --config "$CONFIG"
+# Validation exits non-zero on any FAIL, but some checks (V7's success band) are
+# informational at small n. Capture the code and still run the analysis -- the
+# descriptive stats are exactly what you need to interpret a failing check.
+set +e
+python scripts/04_validate.py --config "$CONFIG"; VALIDATE_RC=$?
+set -e
 echo "########## ANALYZE ##########"
 python scripts/05_analyze.py --config "$CONFIG"
+exit $VALIDATE_RC
