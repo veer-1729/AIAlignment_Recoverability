@@ -1,0 +1,58 @@
+# Gate B -- validation tier. The last gate before we STOP and report.
+#
+# ~42 games (7 per task type) x 2 rollouts x 4 checkpoints ~= 336 checkpoints per
+# arm. Arm A runs 1 suffix per action (realized U); Arm B runs 5 (estimated Qhat).
+# This is the tier that answers the two acceptance questions:
+#   Q1 (replication) -- did Arm A reproduce the same-risk/different-control effect?
+#   Q2 (extension)   -- are Arm B's Qhat targets stable enough for Stage-2 probes?
+run_id: validation
+data_root: data/runs
+
+alfworld:
+  split: train
+  data_dir: /data/alfworld
+  games_per_task_type: 7          # 7 x 6 task types = 42 games
+  max_episode_steps: 50
+  expert_max_steps: 1000
+
+model:
+  id: Qwen/Qwen2.5-7B-Instruct
+  revision: null
+  template: hf                    # authoritative; source of prompt_token_ids for V10
+
+serving:
+  kind: openai_compatible
+  base_url: http://localhost:8000
+  model: Qwen/Qwen2.5-7B-Instruct
+  api_key: EMPTY
+
+scaffold:
+  mode: act
+  n_shots: 2
+  show_admissible_commands: false
+  max_action_tokens: 24
+  max_confidence_tokens: 8
+
+elicit_confidence: true
+
+arms:
+  - name: A_replication
+    temperature: 0.0
+    n_replicates: 1
+  - name: B_montecarlo
+    temperature: 0.7
+    n_replicates: 5
+
+rollouts:
+  per_game: 2
+
+branching:
+  k_checkpoints: 4
+
+splits:
+  # Enlarged interactive suite from App. B.3. These label a subset for replication
+  # fidelity; the section-7 analysis uses every usable checkpoint regardless, so
+  # nothing is wasted -- the labels exist for Stage 2.
+  paper_counts: [20, 10, 20]
+  task_level_fractions: [0.6, 0.2, 0.2]
+  seed: 0
