@@ -1,0 +1,59 @@
+# Plumbing dry-run: the full pipeline with NO model and NO GPU.
+#
+# The scripted client always answers "look", so the agent dithers and fails every
+# episode. That is deliberate -- it is not a measurement of anything, it is a way
+# to exercise rollout -> checkpoint -> replay -> branch -> derive -> validate
+# -> analyse end to end before spending money. Any number this run produces about
+# agent behaviour is meaningless by construction.
+run_id: dryrun
+data_root: data/runs
+
+alfworld:
+  split: train
+  data_dir: /data/alfworld
+  games_per_task_type: 1
+  # Measured: the handcoded expert needs up to 34 steps from t=0 (median 13), so
+  # a cap below ~40 makes V6 fail for reasons that have nothing to do with the
+  # code. Keep the real cap here even though the dithering agent never finishes.
+  max_episode_steps: 50
+  expert_max_steps: 1000
+
+model:
+  id: mock
+  revision: null
+  template: chatml               # no tokenizer download; prompt_token_ids stay null
+
+serving:
+  kind: scripted
+  responses: ["look"]
+
+scaffold:
+  mode: act
+  n_shots: 2
+  show_admissible_commands: false
+  max_action_tokens: 24
+  max_confidence_tokens: 8
+
+# On, even though a scripted confidence is meaningless: this exercises the
+# policy -> confidence -> storage path that Gate A will use, including the
+# unparseable-response branch (the client answers "look", which parses to None).
+elicit_confidence: true
+
+arms:
+  - name: A_replication
+    temperature: 0.0
+    n_replicates: 1
+  - name: B_montecarlo
+    temperature: 0.7
+    n_replicates: 3
+
+rollouts:
+  per_game: 1
+
+branching:
+  k_checkpoints: 3
+
+splits:
+  paper_counts: [8, 4, 8]
+  task_level_fractions: [0.6, 0.2, 0.2]
+  seed: 0

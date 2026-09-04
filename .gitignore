@@ -1,0 +1,12 @@
+# Generated artifacts. Both are reproducible from source + configs, and the
+# ALFWorld game files alone are 2.2 GB.
+data/
+reports/
+*.egg-info/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.DS_Store
+.env

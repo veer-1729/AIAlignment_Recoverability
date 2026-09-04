@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cnc"
+version = "0.1.0"
+description = "Stage 1: prefix-branching substrate for runtime control of long-horizon LLM agents"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.21",
+    "pandas>=1.3",
+    "pyyaml>=5.4",
+    "httpx>=0.24",
+]
+
+[project.optional-dependencies]
+# Installed only inside the linux/amd64 container; alfworld pulls textworld,
+# which publishes x86_64 wheels only (see plan section 2e).
+env = ["alfworld>=0.4.2"]
+analysis = ["matplotlib>=3.5", "pyarrow>=9"]
+# Tokenizer only -- no torch. Needed for the authoritative chat template, for
+# prompt_token_ids, and for validation check V10. Stage 2's activation extraction
+# will add torch on the GPU box; Stage 1 never needs it.
+tokenizer = ["transformers>=4.40", "sentencepiece", "protobuf"]
+dev = ["pytest>=7", "pytest-cov"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+cnc = ["agent/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+filterwarnings = ["ignore::DeprecationWarning"]

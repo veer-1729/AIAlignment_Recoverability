@@ -1,0 +1,59 @@
+# Gate A -- pilot. Correctness only, not statistics.
+#
+# Six games (one per ALFWorld task type, each with its own upstream expert policy
+# class) x 1 rollout x <=3 checkpoints. The point is to exercise every code path
+# and run V1-V6, V8-V10 cheaply; the sample is far too small for the descriptive
+# analysis to mean anything.
+run_id: pilot
+data_root: data/runs
+
+alfworld:
+  split: train
+  # NOTE: the paper does not state which ALFWorld split it used. We take train
+  # games for volume and hold out valid_unseen entirely for later work.
+  data_dir: /data/alfworld
+  games_per_task_type: 1
+  max_episode_steps: 50          # replication ambiguity (plan 5.2), ReAct convention
+  expert_max_steps: 1000         # >> upstream's hard-coded 200; prefix replay spends it
+
+model:
+  id: Qwen/Qwen2.5-7B-Instruct
+  revision: null
+  template: hf                   # authoritative; source of prompt_token_ids for V10
+
+serving:
+  kind: openai_compatible
+  base_url: http://localhost:8000
+  model: Qwen/Qwen2.5-7B-Instruct
+  api_key: EMPTY
+
+# Replication ambiguities. The paper fixes only max_action_tokens=24 and
+# max_confidence_tokens=8; everything else here follows the upstream ReAct
+# reference convention and is recorded in provenance.
+scaffold:
+  mode: act
+  n_shots: 2
+  show_admissible_commands: false
+  max_action_tokens: 24
+  max_confidence_tokens: 8
+
+elicit_confidence: true
+
+arms:
+  - name: A_replication          # paper-faithful: realized U(s,a)
+    temperature: 0.0
+    n_replicates: 1
+  - name: B_montecarlo           # extension: estimates Qhat(s,a)
+    temperature: 0.7
+    n_replicates: 5
+
+rollouts:
+  per_game: 1
+
+branching:
+  k_checkpoints: 3
+
+splits:
+  paper_counts: [8, 4, 8]        # App. B.3 original interactive suite
+  task_level_fractions: [0.6, 0.2, 0.2]
+  seed: 0
