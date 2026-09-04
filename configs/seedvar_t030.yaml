@@ -1,0 +1,78 @@
+# Gate A, variant: admissible commands SHOWN to the agent.
+#
+# A/B against configs/pilot.yaml, which differs only in this one flag and the
+# run_id. Both datasets are kept so the effect size is measurable rather than
+# asserted.
+#
+# Why this lever and not act->react. Whether the agent sees the admissible
+# command list is a replication ambiguity (plan 5.2) -- the paper never says.
+# Our default hid them, following the ReAct convention, and that produced a 0%
+# base success rate: the agent navigates correctly (every "go to X" it tried was
+# admissible) but invents object-interaction syntax it never saw, then repeats
+# the same rejected action for dozens of steps.
+#
+# Switching to ReAct-style thinking would also plausibly fix it, but it requires
+# raising max_action_tokens well past 24 -- and 24 is one of the few numbers the
+# paper actually states. Showing the command list keeps that budget intact, needs
+# no code change, and targets the observed failure directly. If it is not enough,
+# act->react is the next lever and the deviation gets documented then.
+
+# Gate A -- pilot. Correctness only, not statistics.
+#
+# Six games (one per ALFWorld task type, each with its own upstream expert policy
+# class) x 1 rollout x <=3 checkpoints. The point is to exercise every code path
+# and run V1-V6, V8-V10 cheaply; the sample is far too small for the descriptive
+# analysis to mean anything.
+run_id: seedvar_t030
+data_root: data/runs
+
+alfworld:
+  split: train
+  # NOTE: the paper does not state which ALFWorld split it used. We take train
+  # games for volume and hold out valid_unseen entirely for later work.
+  data_dir: /data/alfworld
+  games_per_task_type: 2
+  max_episode_steps: 50          # replication ambiguity (plan 5.2), ReAct convention
+  expert_max_steps: 1000         # >> upstream's hard-coded 200; prefix replay spends it
+
+model:
+  id: Qwen/Qwen2.5-7B-Instruct
+  revision: null
+  template: hf                   # authoritative; source of prompt_token_ids for V10
+
+serving:
+  kind: openai_compatible
+  base_url: http://localhost:8000
+  model: Qwen/Qwen2.5-7B-Instruct
+  api_key: EMPTY
+
+# Replication ambiguities. The paper fixes only max_action_tokens=24 and
+# max_confidence_tokens=8; everything else here follows the upstream ReAct
+# reference convention and is recorded in provenance.
+scaffold:
+  mode: act
+  n_shots: 2
+  show_admissible_commands: true
+  max_action_tokens: 24
+  max_confidence_tokens: 8
+
+elicit_confidence: true
+
+arms:
+  - name: A_replication          # paper-faithful: realized U(s,a)
+    temperature: 0.0
+    n_replicates: 1
+  - name: B_montecarlo           # extension: estimates Qhat(s,a)
+    temperature: 0.30
+    n_replicates: 5
+
+rollouts:
+  per_game: 3
+
+branching:
+  k_checkpoints: 3
+
+splits:
+  paper_counts: [8, 4, 8]        # App. B.3 original interactive suite
+  task_level_fractions: [0.6, 0.2, 0.2]
+  seed: 0
