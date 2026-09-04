@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from collections import Counter
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -59,25 +60,37 @@ def main() -> int:
     print("[03] arm={} shard={}/{} checkpoints={} replicates={}".format(
         rcfg.arm, args.shard, args.num_shards, len(cps), rcfg.n_replicates))
 
+    # Write incrementally, not at completion.
+    #
+    # Buffering a whole shard in memory and flushing at the end means a process
+    # that dies at 90% loses everything -- and a scaled run puts real memory
+    # pressure on the box, which makes an OOM kill a live possibility rather
+    # than a hypothetical. Streaming each checkpoint's branches to disk as they
+    # finish caps the loss at one checkpoint and makes progress observable while
+    # the shard is still running.
     errors = []
     branches = []
-    for cp in cps:
-        try:
-            rollout = rollouts[cp["rollout_id"]]
-            task = tasks[cp["task_id"]]
-            branches.extend(
-                run_checkpoint_branches(
+    prov = experiment.make_provenance(cfg, rcfg, template)
+    out_path = rd.shard_path("branches", args.shard, args.num_shards)
+    t0 = time.time()
+
+    with JsonlWriter(out_path, prov) as w:
+        for i, cp in enumerate(cps):
+            try:
+                rollout = rollouts[cp["rollout_id"]]
+                task = tasks[cp["task_id"]]
+                got = run_checkpoint_branches(
                     cp, rollout, task, policy, rcfg,
                     env_factory=experiment.make_env_factory(task["game_file"], rcfg),
                 )
-            )
-        except Exception as exc:
-            errors.append((cp["checkpoint_id"], repr(exc)))
-
-    prov = experiment.make_provenance(cfg, rcfg, template)
-    out_path = rd.shard_path("branches", args.shard, args.num_shards)
-    with JsonlWriter(out_path, prov) as w:
-        w.write_many(branches)
+                w.write_many(got)
+                branches.extend(got)
+            except Exception as exc:
+                errors.append((cp["checkpoint_id"], repr(exc)))
+            if (i + 1) % 5 == 0 or i + 1 == len(cps):
+                el = time.time() - t0
+                print("[03] shard={} {}/{} checkpoints  {:.0f}s  ({:.1f}s/cp)".format(
+                    args.shard, i + 1, len(cps), el, el / (i + 1)), flush=True)
 
     executed = [b for b in branches if b["action"] != "quit"]
     verified = [b for b in executed if b["replay_verified"]]
