@@ -60,9 +60,6 @@ def main() -> int:
         (c for c in rd.read_all("checkpoints") if c["arm"] == rcfg.arm),
         key=lambda c: c["checkpoint_id"],
     )
-    if args.limit:
-        cps = cps[: args.limit]
-
     # Resume BEFORE sharding, not after.
     #
     # The authority on what is already done is the branch data itself, never the
@@ -84,6 +81,13 @@ def main() -> int:
 
     if args.num_shards > 1:
         cps = [c for i, c in enumerate(cps) if i % args.num_shards == args.shard]
+
+    # --limit caps THIS SHARD's work, and is applied last on purpose. Capping the
+    # global list first and then filtering and striding it leaves a smoke run with
+    # nothing to do -- the head of the list is exactly the part that already
+    # succeeded. For an unsharded run the two orders are identical.
+    if args.limit:
+        cps = cps[: args.limit]
 
     print("[03] arm={} shard={}/{} checkpoints={} replicates={}".format(
         rcfg.arm, args.shard, args.num_shards, len(cps), rcfg.n_replicates))
