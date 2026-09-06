@@ -401,6 +401,39 @@ class RunDir:
             for rec in read_jsonl(path):
                 yield rec
 
+    def _select_sources(self):
+        """Winning source file per ``(checkpoint_id, arm)``, plus overlap counts."""
+        counts: Dict[Any, Dict[str, int]] = defaultdict(dict)
+        for path in self.all_shards("branches"):
+            for rec in read_jsonl(path):
+                key = (rec.get("checkpoint_id"), rec.get("arm"))
+                counts[key][path] = counts[key].get(path, 0) + 1
+
+        chosen: Dict[Any, str] = {}
+        multi = superseded = 0
+        for key, per_file in counts.items():
+            # max() keeps the first maximum in iteration order, so sorting the
+            # paths first makes ties resolve to the lexicographically first file.
+            best = max(sorted(per_file), key=lambda p: per_file[p])
+            chosen[key] = best
+            if len(per_file) > 1:
+                multi += 1
+                superseded += sum(n for p, n in per_file.items() if p != best)
+        return chosen, multi, superseded
+
+    def branch_sources(self) -> Dict[Any, str]:
+        """``(checkpoint_id, arm)`` -> basename of the file its records came from.
+
+        The file name records which execution a checkpoint's branches came from,
+        which is the only handle on cohort once records are pooled. A dataset
+        assembled from a first run plus a rescue run has two cohorts that met
+        different server processes, and the split between them is not random --
+        it follows how far each shard got before it died. Whether that shows up
+        in the values is a question you can only ask if you can label the rows.
+        """
+        chosen, _, _ = self._select_sources()
+        return {k: os.path.basename(v) for k, v in chosen.items()}
+
     def read_branches(
         self, report: Optional[Dict[str, Any]] = None
     ) -> Iterator[Dict[str, Any]]:
@@ -432,23 +465,8 @@ class RunDir:
         second yields only the winners. Pass ``report`` to receive a dict
         describing what was superseded.
         """
-        counts: Dict[Any, Dict[str, int]] = defaultdict(dict)
+        chosen, multi, superseded = self._select_sources()
         paths = self.all_shards("branches")
-        for path in paths:
-            for rec in read_jsonl(path):
-                key = (rec.get("checkpoint_id"), rec.get("arm"))
-                counts[key][path] = counts[key].get(path, 0) + 1
-
-        chosen: Dict[Any, str] = {}
-        multi = superseded = 0
-        for key, per_file in counts.items():
-            # max() keeps the first maximum in iteration order, so sorting the
-            # paths first makes ties resolve to the lexicographically first file.
-            best = max(sorted(per_file), key=lambda p: per_file[p])
-            chosen[key] = best
-            if len(per_file) > 1:
-                multi += 1
-                superseded += sum(n for p, n in per_file.items() if p != best)
 
         seen: set = set()
         dup = 0
