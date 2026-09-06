@@ -17,10 +17,13 @@ Design rules that the rest of the codebase depends on:
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
+import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Iterator, List, Optional
@@ -132,6 +135,68 @@ class Provenance:
         return {"__provenance__": asdict(self)}
 
 
+
+# --------------------------------------------------------------------------
+# Disk guards.
+#
+# A scaled branching run died on ``OSError(28, 'No space left on device')`` and
+# lost roughly half its checkpoints. Two things made that far worse than it had
+# to be. First, the per-checkpoint ``except`` in the runner swallowed the ENOSPC
+# and marched on, so shards spent hours executing work they could not persist --
+# one shard failed 146 of 197 checkpoints that way. Second, ENOSPC is returned
+# for *inode* exhaustion as well as byte exhaustion, so a post-mortem ``df -h``
+# showing free space proves nothing. Both are checked here.
+# --------------------------------------------------------------------------
+
+class DiskExhausted(RuntimeError):
+    """Raised when a filesystem is out of bytes or inodes.
+
+    Deliberately not an ``OSError``: callers that broadly catch ``Exception``
+    per work item must not be able to swallow this one and keep going.
+    """
+
+
+def disk_headroom(path: str) -> Dict[str, Any]:
+    """Free bytes and free inodes for the filesystem holding ``path``."""
+    st = os.statvfs(path)
+    free_bytes = st.f_bavail * st.f_frsize
+    total_bytes = st.f_blocks * st.f_frsize
+    free_inodes = st.f_favail
+    total_inodes = st.f_files
+    return {
+        "path": path,
+        "free_bytes": free_bytes,
+        "total_bytes": total_bytes,
+        "free_gb": free_bytes / 2**30,
+        "free_inodes": free_inodes,
+        "total_inodes": total_inodes,
+        "pct_bytes_free": 100.0 * free_bytes / max(1, total_bytes),
+        "pct_inodes_free": 100.0 * free_inodes / max(1, total_inodes),
+    }
+
+
+def check_disk(path: str, min_free_gb: float = 2.0, min_free_inodes: int = 50_000) -> Dict[str, Any]:
+    """Raise :class:`DiskExhausted` before a write can fail, not after.
+
+    Called at startup and between work items. The thresholds are headroom, not
+    limits: the point is to stop while there is still room to write out what has
+    already been computed.
+    """
+    h = disk_headroom(path)
+    if h["free_bytes"] < min_free_gb * 2**30:
+        raise DiskExhausted(
+            "only {:.2f} GB free on the filesystem holding {} (need {:.2f} GB)".format(
+                h["free_gb"], path, min_free_gb))
+    # total_inodes == 0 on filesystems that do not report them (btrfs, some
+    # overlayfs); absence of the metric is not evidence of exhaustion.
+    if h["total_inodes"] > 0 and h["free_inodes"] < min_free_inodes:
+        raise DiskExhausted(
+            "only {} free inodes on the filesystem holding {} (need {}); "
+            "bytes are fine at {:.1f} GB -- this is inode exhaustion".format(
+                h["free_inodes"], path, min_free_inodes, h["free_gb"]))
+    return h
+
+
 class JsonlWriter:
     """Append-only JSONL writer that stamps provenance as the first record."""
 
@@ -144,8 +209,23 @@ class JsonlWriter:
             self._write_obj(provenance.to_record())
 
     def _write_obj(self, obj: Dict[str, Any]) -> None:
-        self._fh.write(json.dumps(obj, sort_keys=True, default=str) + "\n")
+        try:
+            self._fh.write(json.dumps(obj, sort_keys=True, default=str) + "\n")
+            self._fh.flush()
+        except OSError as exc:
+            if getattr(exc, "errno", None) == errno.ENOSPC:
+                raise DiskExhausted("write to {} failed: {}".format(self.path, exc)) from exc
+            raise
+
+    def sync(self) -> None:
+        """Force this file's bytes to the platter.
+
+        ``flush`` only moves data out of Python's buffer into the page cache; it
+        survives the process dying but not the machine. Call this at natural
+        commit points -- after a whole checkpoint, not after every record.
+        """
         self._fh.flush()
+        os.fsync(self._fh.fileno())
 
     def write(self, record: Dict[str, Any]) -> None:
         if "__provenance__" in record:
@@ -166,19 +246,46 @@ class JsonlWriter:
         self.close()
 
 
-def read_jsonl(path: str, include_provenance: bool = False) -> Iterator[Dict[str, Any]]:
-    """Stream records from a JSONL file, skipping the provenance header."""
+MALFORMED_LINES: Dict[str, int] = {}
+
+
+def read_jsonl(
+    path: str, include_provenance: bool = False, strict: bool = False
+) -> Iterator[Dict[str, Any]]:
+    """Stream records from a JSONL file, skipping the provenance header.
+
+    A write killed by ENOSPC or by the process dying leaves a truncated final
+    line. Raising on it would discard every complete record before it in the
+    file -- the wrong trade when the earlier records are hours of GPU time. So a
+    malformed line is skipped, counted in :data:`MALFORMED_LINES`, and announced
+    on stderr; silence would be worse than the corruption. Pass ``strict=True``
+    where a parse failure genuinely should abort.
+    """
     with open(path, "r", encoding="utf-8") as fh:
-        for line in fh:
+        for lineno, line in enumerate(fh, 1):
             line = line.strip()
             if not line:
                 continue
-            obj = json.loads(line)
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                if strict:
+                    raise
+                MALFORMED_LINES[path] = MALFORMED_LINES.get(path, 0) + 1
+                sys.stderr.write(
+                    "[storage] WARNING: malformed JSONL at {}:{} -- skipped "
+                    "(truncated write?)\n".format(path, lineno))
+                continue
             if "__provenance__" in obj:
                 if include_provenance:
                     yield obj
                 continue
             yield obj
+
+
+def malformed_report() -> Dict[str, int]:
+    """Files with skipped lines, so a caller can surface corruption in a report."""
+    return dict(MALFORMED_LINES)
 
 
 def read_provenance(path: str) -> Optional[Dict[str, Any]]:
@@ -240,10 +347,20 @@ class RunDir:
     # process with its own globals, writing its own file. These helpers keep the
     # shard files discoverable so readers never miss one.
 
-    def shard_path(self, stem: str, shard: Optional[int], num_shards: int = 1) -> str:
+    def shard_path(self, stem: str, shard: Optional[int], num_shards: int = 1,
+                   tag: Optional[str] = None) -> str:
+        """Path for one shard's file.
+
+        ``tag`` suffixes the name so a resumed run writes alongside the original
+        rather than reopening it. The ``{stem}.s*.jsonl`` glob in
+        :meth:`all_shards` still matches, so tagged files are picked up by every
+        reader automatically and need no registration anywhere.
+        """
+        suffix = ".{}".format(tag) if tag else ""
         if num_shards <= 1 or shard is None:
-            return self.path("{}.jsonl".format(stem))
-        return self.path("{}.s{:03d}.jsonl".format(stem, shard))
+            return self.path("{}{}.jsonl".format(stem, suffix)) if tag else self.path(
+                "{}.jsonl".format(stem))
+        return self.path("{}.s{:03d}{}.jsonl".format(stem, shard, suffix))
 
     def all_shards(self, stem: str) -> List[str]:
         """Every file for a record type, sharded or not, in deterministic order."""

@@ -489,6 +489,44 @@ def _rejected(
     )
 
 
+def branch_census(branches, n_replicates):
+    """Per-checkpoint completeness census over raw branch records.
+
+    A checkpoint is *complete* only if it carries the full same-prefix comparison:
+    ``n_replicates`` continue branches, ``n_replicates`` intervene branches, and
+    the single analytic quit branch, with every executed branch replay-verified.
+    Anything less cannot support the comparison the whole design exists to make,
+    so it is re-run rather than analysed.
+
+    Written because a disk-exhausted run left shards with a mix of complete,
+    partial and absent checkpoints, and the shard *logs* could not be trusted to
+    say which was which -- one shard's process was killed mid-run. The data is
+    the only authority.
+
+    Returns ``{checkpoint_id: {"counts", "verified", "complete", "reason"}}``.
+    """
+    expected = {CONTINUE: n_replicates, INTERVENE: n_replicates, QUIT: 1}
+    by_cp: Dict[str, Dict[str, Any]] = {}
+    for b in branches:
+        cid = b["checkpoint_id"]
+        rec = by_cp.setdefault(cid, {"counts": {a: 0 for a in expected}, "verified": True})
+        action = b["action"]
+        if action in rec["counts"]:
+            rec["counts"][action] += 1
+        if action != QUIT and not b.get("replay_verified", False):
+            rec["verified"] = False
+    for cid, rec in by_cp.items():
+        short = {a: expected[a] - rec["counts"][a] for a in expected if rec["counts"][a] < expected[a]}
+        if not rec["verified"]:
+            rec["complete"], rec["reason"] = False, "unverified_replay"
+        elif short:
+            rec["complete"], rec["reason"] = False, "short:" + ",".join(
+                "{}-{}".format(a, n) for a, n in sorted(short.items()))
+        else:
+            rec["complete"], rec["reason"] = True, "ok"
+    return by_cp
+
+
 def usable_checkpoints(branches: Sequence[Dict[str, Any]]) -> List[str]:
     """Checkpoint ids where **every** branch replayed cleanly.
 
