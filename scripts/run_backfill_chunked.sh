@@ -26,6 +26,8 @@
 #         MIN_FREE_GB (per-checkpoint guard, default 5)
 #         MAX_ROUNDS (safety stop, default 40)
 #         LOGDIR (default /data/cnc/logs -- keep logs OFF the root filesystem)
+#         CLEAN_TMPDIR (optional: directory whose stale tmp* subdirs are removed
+#                       between rounds; opt-in, never defaulted)
 
 set -uo pipefail
 
@@ -36,6 +38,7 @@ CHUNK="${CHUNK:-40}"
 MIN_FREE_GB="${MIN_FREE_GB:-5}"
 MAX_ROUNDS="${MAX_ROUNDS:-40}"
 LOGDIR="${LOGDIR:-/data/cnc/logs}"
+CLEAN_TMPDIR="${CLEAN_TMPDIR:-}"
 
 mkdir -p "$LOGDIR"
 RUNDIR="$(python -c "
@@ -70,6 +73,25 @@ for round in $(seq 1 "$MAX_ROUNDS"); do
   # Every shard process has now exited, so anything they were holding open is
   # released here. This is the measurement that matters.
   echo "-- df after (all shard processes exited) --"; df -h "$RUNDIR" / | sed 's/^/   /'
+
+  # The leak is fast-downward: each PDDL solve extracts libdownward.so into a
+  # fresh temp directory, unlinks it, and keeps the mapping. Process exit frees
+  # the blocks, which is what the chunking above is for -- but the empty
+  # directories can survive, and thousands of them per shard per round is inode
+  # pressure, which returns ENOSPC just as byte exhaustion does.
+  #
+  # Opt-in, and only between rounds. The pgrep guard is not decoration: removing
+  # a temp directory out from under a live solve would break it.
+  if [ -n "$CLEAN_TMPDIR" ] && [ -d "$CLEAN_TMPDIR" ]; then
+    if pgrep -f 03_run_branches > /dev/null; then
+      echo "   NOT cleaning $CLEAN_TMPDIR -- a branching process is still alive"
+    else
+      n_before="$(find "$CLEAN_TMPDIR" -mindepth 1 -maxdepth 1 -type d -name 'tmp*' 2>/dev/null | wc -l)"
+      find "$CLEAN_TMPDIR" -mindepth 1 -maxdepth 1 -type d -name 'tmp*' -exec rm -rf {} + 2>/dev/null
+      echo "   removed $n_before stale tmp* dirs from $CLEAN_TMPDIR"
+      df -i "$RUNDIR" | sed 's/^/   inodes: /'
+    fi
+  fi
 
   grep -h "^\[03\] resume:" "$LOGDIR/backfill.r${round}.s0.log" || true
   grep -lh "ABORTING" "$LOGDIR"/backfill.r${round}.s*.log 2>/dev/null \
