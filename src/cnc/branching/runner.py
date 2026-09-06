@@ -537,6 +537,18 @@ def branch_census(branches, n_replicates):
     return by_cp
 
 
+def complete_group(cid, recs, n_replicates) -> bool:
+    """True when these records form a full, verified same-prefix comparison.
+
+    The test every consumer used before this was "all branches verified and all
+    three actions present", which passes a checkpoint holding three continue
+    branches where five are required: the derivation then reports a Monte-Carlo
+    mean and standard error over a sample size it does not have, silently. The
+    replicate count is part of what "usable" means, so it is checked here.
+    """
+    return branch_census(recs, n_replicates)[cid]["complete"]
+
+
 def usable_checkpoints(branches: Sequence[Dict[str, Any]]) -> List[str]:
     """Checkpoint ids where **every** branch replayed cleanly.
 

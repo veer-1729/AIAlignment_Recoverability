@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import numpy as np
 
 from cnc import experiment, utility
+from cnc.branching.runner import complete_group
 from cnc.storage import ARM_MONTECARLO, ARM_REPLICATION, read_jsonl
 
 
@@ -50,6 +51,8 @@ def main() -> int:
     tasks = {t["task_id"]: t for t in read_jsonl(rd.tasks)}
     cps = {c["checkpoint_id"]: c for c in rd.read_all("checkpoints")}
     branches = list(rd.read_branches())
+    reps_by_arm = {a: experiment.build_runner_config(cfg, a).n_replicates
+                   for a in (ARM_REPLICATION, ARM_MONTECARLO)}
 
     by_cp = defaultdict(list)
     for b in branches:
@@ -59,9 +62,7 @@ def main() -> int:
     for arm in (ARM_REPLICATION, ARM_MONTECARLO):
         rows, per_cp = [], {}
         for (cid, a), bs in by_cp.items():
-            if a != arm or not all(x["replay_verified"] for x in bs):
-                continue
-            if {x["action"] for x in bs} != set(utility.ACTIONS):
+            if a != arm or not complete_group(cid, bs, reps_by_arm[arm]):
                 continue
             cv = utility.values_from_branches(cid, arm, bs)
             r = cv.to_row()

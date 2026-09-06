@@ -31,12 +31,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import numpy as np
 
 from cnc import experiment, utility
+from cnc.branching.runner import complete_group
 from cnc.storage import ARMS, read_jsonl
 
 N_BINS = 10
 
 
-def derive(branches, cps_by_id, params=utility.PAPER_PARAMS):
+def derive(branches, cps_by_id, reps_by_arm, params=utility.PAPER_PARAMS):
     """Raw branch records -> per-checkpoint values. Pure re-derivation."""
     grouped = defaultdict(list)
     for b in branches:
@@ -44,9 +45,10 @@ def derive(branches, cps_by_id, params=utility.PAPER_PARAMS):
 
     rows = []
     for (cid, arm), rs in sorted(grouped.items()):
-        if not all(x["replay_verified"] for x in rs):
-            continue  # checkpoint dropped whole; see runner.usable_checkpoints
-        if {x["action"] for x in rs} != set(utility.ACTIONS):
+        # Completeness includes the replicate count, not just "all three actions
+        # present" -- a checkpoint whose rerun died partway would otherwise
+        # contribute a Q-hat averaged over three samples reported as five.
+        if arm not in reps_by_arm or not complete_group(cid, rs, reps_by_arm[arm]):
             continue
         cv = utility.values_from_branches(cid, arm, rs, params)
         row = cv.to_row()
@@ -265,6 +267,7 @@ def main() -> int:
     for c in cps_by_id.values():
         c["task_type"] = tasks.get(c["task_id"], {}).get("task_type", "")
     branches = list(rd.read_branches())
+    reps_by_arm = {a: experiment.build_runner_config(cfg, a).n_replicates for a in ARMS}
 
     os.makedirs("reports/figures", exist_ok=True)
     lines = ["# Stage 1 descriptive analysis - run `{}`".format(cfg["run_id"]),
@@ -275,7 +278,7 @@ def main() -> int:
     summary = {}
 
     for arm in ARMS:
-        rows = derive(branches, cps_by_id)
+        rows = derive(branches, cps_by_id, reps_by_arm)
         rows = [r for r in rows if r["arm"] == arm]
         summary[arm] = summarise(rows, arm, lines)
         if rows:

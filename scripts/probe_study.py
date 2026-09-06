@@ -56,6 +56,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import numpy as np
 
 from cnc import experiment, utility
+from cnc.branching.runner import complete_group
 from cnc.features import prefix as prefix_features
 
 LAYERS = (8, 16, 24)                 # pre-registered, not searched
@@ -69,14 +70,21 @@ MIN_BAND_TR, MIN_BAND_TE = 25, 10
 # --------------------------------------------------------------------------
 # data
 # --------------------------------------------------------------------------
-def derive(rd, arm):
+def derive(rd, arm, n_replicates):
+    """Per-checkpoint values, from complete same-prefix comparisons only.
+
+    Completeness is the replicate count as well as the action set. A checkpoint
+    holding three continue branches instead of five would otherwise enter the
+    study with a Q-hat and a standard error computed over a sample size it does
+    not have -- and this is the script that answers the four questions.
+    """
     by = defaultdict(list)
     for b in rd.read_branches():
         if b["arm"] == arm:
             by[b["checkpoint_id"]].append(b)
     out = {}
     for cid, bs in by.items():
-        if all(x["replay_verified"] for x in bs) and {x["action"] for x in bs} == set(utility.ACTIONS):
+        if complete_group(cid, bs, n_replicates):
             out[cid] = utility.values_from_branches(cid, arm, bs).to_row()
     return out
 
@@ -388,7 +396,7 @@ def main() -> int:
     cfg = experiment.load_config(args.config)
     rd = experiment.run_dir(cfg)
     cps = {c["checkpoint_id"]: c for c in rd.read_all("checkpoints") if c["arm"] == args.arm}
-    rows = derive(rd, args.arm)
+    rows = derive(rd, args.arm, experiment.build_runner_config(cfg, args.arm).n_replicates)
 
     z = np.load(rd.path("activations_{}.npz".format(args.arm)), allow_pickle=True)
     A, aids = z["activations"], list(z["checkpoint_ids"])

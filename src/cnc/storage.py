@@ -198,6 +198,29 @@ def check_disk(path: str, min_free_gb: float = 2.0, min_free_inodes: int = 50_00
     return h
 
 
+def guard_paths(base: str) -> List[str]:
+    """Every distinct filesystem a branching process can write to.
+
+    Watching only the run directory is not enough, and the run that failed proves
+    it: the run dir was on a volume with 160 GB free the whole time, while the
+    root filesystem -- holding /tmp, the logs, and whatever the env stack writes
+    behind our back -- was the one that filled. Deduplicated by device, so a box
+    where these are one filesystem pays for one check.
+    """
+    import tempfile
+
+    seen, out = set(), []
+    for p in (base, "/", tempfile.gettempdir()):
+        try:
+            dev = os.stat(p).st_dev
+        except OSError:
+            continue
+        if dev not in seen:
+            seen.add(dev)
+            out.append(p)
+    return out
+
+
 class JsonlWriter:
     """Append-only JSONL writer that stamps provenance as the first record."""
 

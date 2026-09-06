@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 import sys
 import time
@@ -27,7 +28,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from cnc import experiment
 from cnc.branching.runner import branch_census, run_checkpoint_branches, usable_checkpoints
-from cnc.storage import DiskExhausted, JsonlWriter, check_disk, disk_headroom, read_jsonl
+from cnc.storage import (
+    DiskExhausted, JsonlWriter, check_disk, disk_headroom, guard_paths, read_jsonl,
+)
 
 
 def main() -> int:
@@ -46,6 +49,8 @@ def main() -> int:
                          "existing shard file is never reopened or overwritten")
     ap.add_argument("--min-free-gb", type=float, default=2.0)
     ap.add_argument("--min-free-inodes", type=int, default=50000)
+    ap.add_argument("--max-consecutive-errors", type=int, default=5,
+                    help="abort the shard after this many failures in a row")
     args = ap.parse_args()
 
     cfg = experiment.load_config(args.config)
@@ -117,11 +122,20 @@ def main() -> int:
     # Stop while there is still room to write, rather than discovering the disk
     # is full at the moment of writing. The previous run swallowed ENOSPC per
     # checkpoint and kept going: one shard burned hours failing 146 of 197.
-    h = check_disk(rd.base, args.min_free_gb, args.min_free_inodes)
-    print("[03] disk at start: {:.1f} GB free ({:.1f}%), {} inodes free ({:.1f}%)".format(
-        h["free_gb"], h["pct_bytes_free"], h["free_inodes"], h["pct_inodes_free"]))
+    #
+    # Watch every filesystem the process can write to, not just the run dir. The
+    # run that failed had 160 GB free where it was writing results and filled the
+    # ROOT filesystem instead -- /tmp, the logs, and whatever the env stack puts
+    # there. A guard pointed only at the run dir would have stayed green
+    # throughout.
+    watched = guard_paths(rd.base)
+    for p in watched:
+        h = check_disk(p, args.min_free_gb, args.min_free_inodes)
+        print("[03] disk {}: {:.1f} GB free ({:.1f}%), {} inodes free ({:.1f}%)".format(
+            p, h["free_gb"], h["pct_bytes_free"], h["free_inodes"], h["pct_inodes_free"]))
     t0 = time.time()
     aborted = None
+    consecutive = 0
 
     with JsonlWriter(out_path, prov) as w:
         for i, cp in enumerate(cps):
@@ -129,7 +143,8 @@ def main() -> int:
                 # Both the guard and any ENOSPC from the writer raise
                 # DiskExhausted, which is deliberately NOT an OSError so the
                 # broad except below cannot swallow it.
-                check_disk(rd.base, args.min_free_gb, args.min_free_inodes)
+                for p in watched:
+                    check_disk(p, args.min_free_gb, args.min_free_inodes)
                 rollout = rollouts[cp["rollout_id"]]
                 task = tasks[cp["task_id"]]
                 got = run_checkpoint_branches(
@@ -139,19 +154,42 @@ def main() -> int:
                 w.write_many(got)
                 w.sync()          # commit each checkpoint to the platter, not the page cache
                 branches.extend(got)
+                consecutive = 0
             except DiskExhausted as exc:
                 aborted = str(exc)
                 print("[03] shard={} ABORTING at checkpoint {}/{}: {}".format(
                     args.shard, i + 1, len(cps), exc), flush=True)
                 break
             except Exception as exc:
+                # The failure that cost us half the dataset arrived HERE, not
+                # from the writer: every branch record on disk belonged to a
+                # complete checkpoint, so ENOSPC was raised inside branch
+                # execution -- the env stack writing to a filesystem we were not
+                # watching -- and this handler filed it as an ordinary
+                # per-checkpoint error and moved to the next one, for hours.
+                if isinstance(exc, OSError) and exc.errno == errno.ENOSPC:
+                    aborted = "ENOSPC raised inside branch execution: {!r}".format(exc)
+                    print("[03] shard={} ABORTING at checkpoint {}/{}: {}".format(
+                        args.shard, i + 1, len(cps), aborted), flush=True)
+                    break
                 errors.append((cp["checkpoint_id"], repr(exc)))
+                consecutive += 1
+                # The named check above only catches the failure we already know
+                # about. This one catches the next one: a healthy run has isolated
+                # errors, never a run of them, so a streak means something
+                # systemic and every further checkpoint is wasted compute.
+                if consecutive >= args.max_consecutive_errors:
+                    aborted = "{} consecutive failures, last: {!r}".format(consecutive, exc)
+                    print("[03] shard={} ABORTING at checkpoint {}/{}: {}".format(
+                        args.shard, i + 1, len(cps), aborted), flush=True)
+                    break
             if (i + 1) % 5 == 0 or i + 1 == len(cps):
-                el, hh = time.time() - t0, disk_headroom(rd.base)
-                print("[03] shard={} {}/{} checkpoints  {:.0f}s  ({:.1f}s/cp)  "
-                      "disk {:.1f}GB/{} inodes free".format(
-                          args.shard, i + 1, len(cps), el, el / (i + 1),
-                          hh["free_gb"], hh["free_inodes"]), flush=True)
+                el = time.time() - t0
+                disks = " ".join("{}:{:.1f}GB/{}i".format(
+                    p, disk_headroom(p)["free_gb"], disk_headroom(p)["free_inodes"])
+                    for p in watched)
+                print("[03] shard={} {}/{} checkpoints  {:.0f}s  ({:.1f}s/cp)  {}".format(
+                    args.shard, i + 1, len(cps), el, el / (i + 1), disks), flush=True)
 
     executed = [b for b in branches if b["action"] != "quit"]
     verified = [b for b in executed if b["replay_verified"]]
