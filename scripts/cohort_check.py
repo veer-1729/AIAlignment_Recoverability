@@ -97,6 +97,13 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     ap.add_argument("--arm", default="B_montecarlo")
+    ap.add_argument("--stratify", choices=("task_type", "game"), default="task_type",
+                    help="task_type is the default; 'game' is the stricter test -- it "
+                         "compares checkpoints from the SAME game across cohorts, so a "
+                         "difference cannot be explained by which games each cohort holds")
+    ap.add_argument("--min-cohort", type=int, default=25,
+                    help="cohorts smaller than this are reported but excluded from the "
+                         "pairwise tests; a handful of checkpoints cannot support one")
     args = ap.parse_args()
 
     cfg = experiment.load_config(args.config)
@@ -120,6 +127,7 @@ def main() -> int:
         cp = cps[cid]
         r["cohort"] = cohort_of(sources.get((cid, args.arm), ""))
         r["task_type"] = tasks.get(cp.get("task_id"), {}).get("task_type", "?")
+        r["game"] = cp.get("task_id", "?")
         r["t"] = cp.get("t")
         rows.append(r)
 
@@ -127,10 +135,21 @@ def main() -> int:
         print("no usable checkpoints")
         return 1
 
-    cohorts = sorted({r["cohort"] for r in rows})
+    sizes = {c: sum(1 for r in rows if r["cohort"] == c)
+             for c in {r["cohort"] for r in rows}}
     print("usable checkpoints: {}".format(len(rows)))
-    print("cohorts: {}".format(
-        {c: sum(1 for r in rows if r["cohort"] == c) for c in cohorts}))
+    print("cohorts: {}".format(sizes))
+    print("stratifying on: {}".format(args.stratify))
+
+    # A cohort of a few checkpoints cannot support a stratified comparison -- every
+    # stratum falls below the minimum and the estimate comes back NaN. Such a
+    # cohort is usually an operational artifact (a smoke test) rather than a
+    # distinct execution. Excluded from the tests, kept in the dataset.
+    tiny = sorted(c for c, n in sizes.items() if n < args.min_cohort)
+    if tiny:
+        print("excluded from comparison (< {} checkpoints, still in the dataset): {}".format(
+            args.min_cohort, {c: sizes[c] for c in tiny}))
+    cohorts = sorted(c for c, n in sizes.items() if n >= args.min_cohort)
     if len(cohorts) < 2:
         print("\nsingle cohort -- nothing to compare, the dataset came from one execution")
         return 0
@@ -154,10 +173,19 @@ def main() -> int:
                                "  ".join("{:>10.2f}".format(mean_t[c]) for c in cohorts)))
 
     # Two cohorts only; with more, compare each against the largest.
-    ref = max(cohorts, key=lambda c: sum(1 for r in rows if r["cohort"] == c))
+    ref = max(cohorts, key=lambda c: sizes[c])
     others = [c for c in cohorts if c != ref]
     rng = np.random.default_rng(0)
     out = {"n": len(rows), "reference": ref, "metrics": {}}
+
+    for other in [c for c in cohorts if c != ref]:
+        sa = {r[args.stratify] for r in rows if r["cohort"] == ref}
+        sb = {r[args.stratify] for r in rows if r["cohort"] == other}
+        shared = sa & sb
+        print("  strata shared by '{}' and '{}': {} of {}".format(
+            ref, other, len(shared), len(sa | sb)))
+        if not shared:
+            print("    !! no shared strata -- no like-for-like comparison is possible here")
 
     print("\nPER-METRIC COMPARISON vs '{}'".format(ref))
     print("  {:<22} {:>9} {:>9} {:>10} {:>22} {}".format(
@@ -167,8 +195,8 @@ def main() -> int:
         for m in METRICS:
             a = np.array([r[m] for r in rows if r["cohort"] == ref], dtype=float)
             b = np.array([r[m] for r in rows if r["cohort"] == other], dtype=float)
-            sa = [r["task_type"] for r in rows if r["cohort"] == ref]
-            sb = [r["task_type"] for r in rows if r["cohort"] == other]
+            sa = [r[args.stratify] for r in rows if r["cohort"] == ref]
+            sb = [r[args.stratify] for r in rows if r["cohort"] == other]
             raw = a.mean() - b.mean()
             strat, lo, hi = stratified_bootstrap(a, sa, b, sb, rng)
             sig = lo > 0 or hi < 0
