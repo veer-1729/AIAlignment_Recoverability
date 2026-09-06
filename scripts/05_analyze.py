@@ -296,7 +296,8 @@ def main() -> int:
     lines.append("| --- | --- | --- | --- | --- | --- |")
     for arm in ARMS:
         for params in utility.cost_sweep_grid():
-            rows = [r for r in derive(branches, cps_by_id, params) if r["arm"] == arm]
+            rows = [r for r in derive(branches, cps_by_id, reps_by_arm, params)
+                    if r["arm"] == arm]
             if not rows:
                 continue
             cm, _ = conflict_mass(rows)

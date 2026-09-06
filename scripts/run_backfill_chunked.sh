@@ -83,7 +83,10 @@ for round in $(seq 1 "$MAX_ROUNDS"); do
   # Opt-in, and only between rounds. The pgrep guard is not decoration: removing
   # a temp directory out from under a live solve would break it.
   if [ -n "$CLEAN_TMPDIR" ] && [ -d "$CLEAN_TMPDIR" ]; then
-    if pgrep -f 03_run_branches > /dev/null; then
+    # Match the interpreter actually running the script, not any command line
+    # that merely mentions it -- a watcher shell with the script name in its own
+    # argv is not a live solve, and matching one makes the cleanup never fire.
+    if pgrep -f '[p]ython[0-9.]* .*scripts/03_run_branches\.py' > /dev/null; then
       echo "   NOT cleaning $CLEAN_TMPDIR -- a branching process is still alive"
     else
       n_before="$(find "$CLEAN_TMPDIR" -mindepth 1 -maxdepth 1 -type d -name 'tmp*' 2>/dev/null | wc -l)"
