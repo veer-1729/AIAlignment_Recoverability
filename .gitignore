@@ -1,7 +1,12 @@
 # Generated artifacts. Both are reproducible from source + configs, and the
 # ALFWorld game files alone are 2.2 GB.
 data/
-reports/
+# reports/ holds generated output (analysis_<run>.md, probe_study_<run>.json), but
+# the hand-written reports are deliverables and belong in the repo. Excluding the
+# directory itself would make the negation below unreachable -- git cannot
+# re-include a file whose parent directory is excluded -- so exclude the contents.
+reports/*
+!reports/*_REPORT.md
 *.egg-info/
 __pycache__/
 *.pyc
