@@ -40,7 +40,7 @@ CS = [1e-4, 1e-3, 1e-2, 1e-1, 1.0]
 
 def derive_rows(rd, arm):
     by_cp = defaultdict(list)
-    for b in rd.read_all("branches"):
+    for b in rd.read_branches():
         if b["arm"] == arm:
             by_cp[b["checkpoint_id"]].append(b)
     out = {}

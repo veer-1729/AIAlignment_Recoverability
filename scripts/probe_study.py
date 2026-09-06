@@ -71,7 +71,7 @@ MIN_BAND_TR, MIN_BAND_TE = 25, 10
 # --------------------------------------------------------------------------
 def derive(rd, arm):
     by = defaultdict(list)
-    for b in rd.read_all("branches"):
+    for b in rd.read_branches():
         if b["arm"] == arm:
             by[b["checkpoint_id"]].append(b)
     out = {}

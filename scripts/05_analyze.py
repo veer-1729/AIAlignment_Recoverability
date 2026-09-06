@@ -264,7 +264,7 @@ def main() -> int:
     tasks = {t["task_id"]: t for t in read_jsonl(rd.tasks)}
     for c in cps_by_id.values():
         c["task_type"] = tasks.get(c["task_id"], {}).get("task_type", "")
-    branches = list(rd.read_all("branches"))
+    branches = list(rd.read_branches())
 
     os.makedirs("reports/figures", exist_ok=True)
     lines = ["# Stage 1 descriptive analysis - run `{}`".format(cfg["run_id"]),

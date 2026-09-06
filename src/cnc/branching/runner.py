@@ -517,11 +517,21 @@ def branch_census(branches, n_replicates):
             rec["verified"] = False
     for cid, rec in by_cp.items():
         short = {a: expected[a] - rec["counts"][a] for a in expected if rec["counts"][a] < expected[a]}
+        # An over-count means records from two attempts were concatenated. That
+        # must never read as "complete": the derivation would average duplicated
+        # replicates and report a standard error for a sample size it does not
+        # have. RunDir.read_branches selects one attempt per checkpoint and
+        # prevents this upstream; this is the check that fails loudly if some
+        # caller ever bypasses it.
+        over = {a: rec["counts"][a] - expected[a] for a in expected if rec["counts"][a] > expected[a]}
         if not rec["verified"]:
             rec["complete"], rec["reason"] = False, "unverified_replay"
         elif short:
             rec["complete"], rec["reason"] = False, "short:" + ",".join(
                 "{}-{}".format(a, n) for a, n in sorted(short.items()))
+        elif over:
+            rec["complete"], rec["reason"] = False, "DUPLICATE_RECORDS:" + ",".join(
+                "{}+{}".format(a, n) for a, n in sorted(over.items()))
         else:
             rec["complete"], rec["reason"] = True, "ok"
     return by_cp

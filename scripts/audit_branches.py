@@ -65,10 +65,25 @@ def main() -> int:
         print("\n  !! {} malformed line(s) skipped -- truncated writes. "
               "Those checkpoints are re-run below.".format(malformed_total))
 
-    # -- global census. A checkpoint can legitimately have records in more than
-    #    one file after a resume, so census the union, never per file.
-    all_recs = [r for recs in per_file_records.values() for r in recs]
+    # -- global census, over the ATOMIC selection.
+    #
+    # After a resume a checkpoint can hold records in two files: a few leftovers
+    # from the attempt that died mid-write, and the full set from the rerun.
+    # Unioning them would count eight continue branches where five exist and
+    # would read as "complete". read_branches picks one attempt per checkpoint;
+    # the report it fills in says how much was superseded.
+    sel_report: dict = {}
+    all_recs = [r for r in rd.read_branches(sel_report) if r.get("arm") == args.arm]
     census = branch_census(all_recs, rcfg.n_replicates)
+
+    if sel_report.get("checkpoints_with_multiple_sources"):
+        print("\nRESUME OVERLAP")
+        print("  checkpoints present in >1 file  {}".format(
+            sel_report["checkpoints_with_multiple_sources"]))
+        print("  records superseded (dropped)    {}".format(sel_report["records_superseded"]))
+        print("  duplicate branch ids dropped    {}".format(
+            sel_report["duplicate_branch_ids_dropped"]))
+        print("  kept per source file: {}".format(sel_report["records_per_source"]))
 
     complete = {cid for cid, v in census.items() if v["complete"]}
     partial = {cid for cid, v in census.items() if not v["complete"]}

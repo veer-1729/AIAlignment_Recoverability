@@ -75,7 +75,7 @@ def main() -> int:
     # scientific meaning -- branch seeds derive from checkpoint_id, not shard.
     if args.only_missing:
         census = branch_census(
-            (b for b in rd.read_all("branches") if b["arm"] == rcfg.arm), rcfg.n_replicates)
+            (b for b in rd.read_branches() if b["arm"] == rcfg.arm), rcfg.n_replicates)
         done = {cid for cid, r in census.items() if r["complete"]}
         before = len(cps)
         cps = [c for c in cps if c["checkpoint_id"] not in done]

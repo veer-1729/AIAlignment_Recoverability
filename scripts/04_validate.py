@@ -56,7 +56,7 @@ def _load(rd):
     tasks = {t["task_id"]: t for t in read_jsonl(rd.tasks)}
     rollouts = {r["rollout_id"]: r for r in rd.read_all("rollouts")}
     cps = list(rd.read_all("checkpoints"))
-    branches = list(rd.read_all("branches"))
+    branches = list(rd.read_branches())
     return tasks, rollouts, cps, branches
 
 

@@ -49,7 +49,7 @@ def main() -> int:
     rd = experiment.run_dir(cfg)
     tasks = {t["task_id"]: t for t in read_jsonl(rd.tasks)}
     cps = {c["checkpoint_id"]: c for c in rd.read_all("checkpoints")}
-    branches = list(rd.read_all("branches"))
+    branches = list(rd.read_branches())
 
     by_cp = defaultdict(list)
     for b in branches:

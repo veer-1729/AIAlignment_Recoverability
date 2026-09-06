@@ -24,6 +24,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections import defaultdict
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Iterator, List, Optional
@@ -376,6 +377,80 @@ class RunDir:
         for path in self.all_shards(stem):
             for rec in read_jsonl(path):
                 yield rec
+
+    def read_branches(
+        self, report: Optional[Dict[str, Any]] = None
+    ) -> Iterator[Dict[str, Any]]:
+        """Branch records with each checkpoint drawn from exactly ONE attempt.
+
+        Why this exists, and why nothing should read branch shards directly.
+
+        Branch ids are deterministic -- ``{checkpoint}::{action}::{replicate}`` --
+        so re-running a checkpoint reproduces the same ids. A run that died
+        part-way through writing a checkpoint leaves a few of its branches on
+        disk; the resume run then writes the full set to a different file. Naive
+        concatenation hands the derivation three leftover continue branches plus
+        five fresh ones and it averages over eight, silently, with three of them
+        duplicates and the standard error understated to match. Every downstream
+        consumer groups by checkpoint id, so every one of them was exposed, and
+        the V9 purity check would not have caught it: V9 asks whether all three
+        actions are present, not whether the replicate count is right.
+
+        Selection rule: for each ``(checkpoint_id, arm)``, keep the records from
+        the single source file holding the MOST of them. A partial write is
+        always strictly smaller than a complete attempt, so this picks the
+        complete one whenever it exists, needs no configuration to know what
+        "complete" means, and breaks ties on sorted filename so it is
+        deterministic. Records from the other files are dropped, not merged --
+        replicates of one checkpoint should come from one consistent attempt
+        against one server, not be stitched together across runs hours apart.
+
+        Two passes so memory stays flat: the first counts records per source, the
+        second yields only the winners. Pass ``report`` to receive a dict
+        describing what was superseded.
+        """
+        counts: Dict[Any, Dict[str, int]] = defaultdict(dict)
+        paths = self.all_shards("branches")
+        for path in paths:
+            for rec in read_jsonl(path):
+                key = (rec.get("checkpoint_id"), rec.get("arm"))
+                counts[key][path] = counts[key].get(path, 0) + 1
+
+        chosen: Dict[Any, str] = {}
+        multi = superseded = 0
+        for key, per_file in counts.items():
+            # max() keeps the first maximum in iteration order, so sorting the
+            # paths first makes ties resolve to the lexicographically first file.
+            best = max(sorted(per_file), key=lambda p: per_file[p])
+            chosen[key] = best
+            if len(per_file) > 1:
+                multi += 1
+                superseded += sum(n for p, n in per_file.items() if p != best)
+
+        seen: set = set()
+        dup = 0
+        emitted = defaultdict(int)
+        for path in paths:
+            for rec in read_jsonl(path):
+                key = (rec.get("checkpoint_id"), rec.get("arm"))
+                if chosen.get(key) != path:
+                    continue
+                bid = rec.get("branch_id")
+                if bid in seen:
+                    dup += 1
+                    continue
+                seen.add(bid)
+                emitted[path] += 1
+                yield rec
+
+        if report is not None:
+            report.update({
+                "checkpoints_with_multiple_sources": multi,
+                "records_superseded": superseded,
+                "duplicate_branch_ids_dropped": dup,
+                "records_per_source": {os.path.basename(p): n for p, n in sorted(emitted.items())},
+                "malformed_lines": malformed_report(),
+            })
 
     def derived(self, arm: str, name: str) -> str:
         d = os.path.join(self.base, "derived", arm)
