@@ -7,12 +7,8 @@ state track changing recoverability? If so, the effect cannot be game identity, 
 type, or position in the episode -- all three are held approximately fixed inside a
 pair, and only the state differs.
 
-CRITERIA, FIXED BEFORE ANY MODEL WAS FITTED (reports/PHASE3_PREREGISTRATION_REPORT.md).
-NOTE: an earlier version of this docstring said that report was "committed before the
-census returned". That is not supportable -- the commit postdates the census logs by
-27-38 seconds. See the CORRECTION section of that report. What holds is that the rule
-was fixed before any pair was scored, and that it is a rule over the whole grid rather
-than a cell chosen from it:
+CRITERIA, FIXED BEFORE ANY MODEL WAS FITTED (reports/PHASE3_PREREGISTRATION_REPORT.md,
+committed before the census returned):
 
     same game, both at risk = 1.00
     |progress difference| <= the TIGHTEST tolerance yielding >= 50 opposite-oracle

@@ -46,6 +46,7 @@ from frozen_transfer import fit_reg_frozen
 
 EXPECT_UNSEEN_ROWS = 445
 EXPECT_UNSEEN_GAMES = 57
+N_SIZE_MATCH = 5      # draws for the size-matched frozen comparator
 
 
 def raw_coef(scaler, model):
@@ -121,9 +122,10 @@ def main() -> int:
         print("\n" + "#" * 78)
         print("# TARGET {}".format(tname))
         print("#" * 78)
-        print("  {:<7} {:>8} {:>8} {:>8} {:>9} {:>7} {:>7} {:>7} {:>8} {:>8} {:>8}".format(
-            "layer", "srcHO", "frozen", "refit", "froz-ref", "RMSE", "pears", "spear",
-            "cal_a", "cal_b", "recal_R2"))
+        print("  {:<7} {:>8} {:>8} {:>8} {:>9} {:>7} {:>7} {:>7} {:>8} {:>8} {:>8}"
+              " {:>9} {:>9}".format(
+                  "layer", "srcHO", "frozen", "refit", "froz-ref", "RMSE", "pears", "spear",
+                  "cal_a", "cal_b", "recal_R2", "sizematch", "sm-refit"))
         trec = {}
         for L in LAYERS:
             X = np.hstack([F, ACT[L]])
@@ -159,6 +161,22 @@ def main() -> int:
             ra, rb = np.polyfit(pf_tr, y[destrain], 1)
             r_recal = float(r2_score(y[unseen], ra * pf + rb))
 
+            # SIZE-MATCHED FROZEN COMPARATOR. `frozen` trains on all 1043 source
+            # rows and `refit` on 483, so frozen-minus-refit confounds a transfer
+            # advantage with 2.2x the training data. This refits the frozen probe on
+            # random source subsamples of exactly the comparator's size, so the only
+            # remaining difference is which cohort the rows came from.
+            rng = np.random.default_rng(0)
+            src_idx = np.where(is_b)[0]
+            n_match = int(destrain.sum())
+            sm_scores = []
+            for _ in range(N_SIZE_MATCH):
+                pick = rng.choice(src_idx, size=min(n_match, len(src_idx)), replace=False)
+                sc_m, m_m, _ = fit_reg_frozen(X[pick], y[pick], task[pick])
+                sm_scores.append(float(r2_score(y[unseen],
+                                                m_m.predict(sc_m.transform(X[unseen])))))
+            sm_mean = float(np.mean(sm_scores))
+
             cr_s, cr_d = raw_coef(sc_s, m_s), raw_coef(sc_d, m_d)
             trec["L{}".format(L)] = {
                 "source_heldout_r2": src_ho, "frozen_r2": r_froz,
@@ -167,13 +185,17 @@ def main() -> int:
                 "calib_slope": float(a_cal), "calib_intercept": float(b_cal),
                 "recalibrated_r2": r_recal,
                 "recal_recovers": float(r_recal - r_froz),
+                "frozen_size_matched_r2": sm_mean,
+                "frozen_size_matched_per_draw": sm_scores,
+                "size_matched_minus_refit": float(sm_mean - r_ref),
                 "cosine_raw": cos(cr_s, cr_d),
                 "cosine_standardized_SUPERSEDED": cos(m_s.coef_, m_d.coef_),
                 "alpha_source": a_s, "alpha_dest": a_d}
             print("  {:<7} {:>8.3f} {:>8.3f} {:>8.3f} {:>9.3f} {:>7.3f} {:>7.3f} {:>7.3f}"
-                  " {:>8.3f} {:>8.3f} {:>8.3f}".format(
+                  " {:>8.3f} {:>8.3f} {:>8.3f} {:>9.3f} {:>9.3f}".format(
                       "L{}".format(L), src_ho, r_froz, r_ref, r_froz - r_ref,
-                      rmse, pe, sp, float(a_cal), float(b_cal), r_recal))
+                      rmse, pe, sp, float(a_cal), float(b_cal), r_recal,
+                      sm_mean, sm_mean - r_ref))
         print("\n  cosine, raw activation coordinates (c/sigma) vs standardized (superseded)")
         for L in LAYERS:
             t = trec["L{}".format(L)]
@@ -207,7 +229,14 @@ def main() -> int:
     print("  in favour of 'its frozen calibration is less stable'. Only calibration-free")
     print("  evidence -- Spearman and raw cosine -- can license the direction claim.")
     print("  'frozen - refit' is the comparison Phase 3 lacked: identical rows, so a gap")
-    print("  there is about the probe and not about the destination being harder.")
+    print("  there is about the probe and not about the destination being harder. But")
+    print("  frozen trains on 1043 rows and refit on 483, so read 'sm-refit' instead --")
+    print("  the frozen probe refitted on source subsamples of exactly the comparator's")
+    print("  size, leaving cohort of origin as the only difference.")
+    print("\n  PART (d) IS AN ALGEBRAIC IDENTITY, NOT EVIDENCE. Ridge is linear, so when the")
+    print("  three fits share an alpha, fit(y1-y2) = fit(y1) - fit(y2) and the difference is")
+    print("  exactly zero by construction. It is a wiring check that the alphas do match,")
+    print("  and nothing at all about whether tau carries information beyond its components.")
     return 0
 
 
