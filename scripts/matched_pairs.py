@@ -7,8 +7,12 @@ state track changing recoverability? If so, the effect cannot be game identity, 
 type, or position in the episode -- all three are held approximately fixed inside a
 pair, and only the state differs.
 
-CRITERIA, FIXED BEFORE ANY MODEL WAS FITTED (reports/PHASE3_PREREGISTRATION_REPORT.md,
-committed before the census returned):
+CRITERIA, FIXED BEFORE ANY MODEL WAS FITTED (reports/PHASE3_PREREGISTRATION_REPORT.md).
+NOTE: an earlier version of this docstring said that report was "committed before the
+census returned". That is not supportable -- the commit postdates the census logs by
+27-38 seconds. See the CORRECTION section of that report. What holds is that the rule
+was fixed before any pair was scored, and that it is a rule over the whole grid rather
+than a cell chosen from it:
 
     same game, both at risk = 1.00
     |progress difference| <= the TIGHTEST tolerance yielding >= 50 opposite-oracle
@@ -57,6 +61,7 @@ def main() -> int:
     ap.add_argument("--arm", default="B_montecarlo")
     ap.add_argument("--seeds", type=int, default=5)
     ap.add_argument("--cohort", default="all", choices=("all", "original"))
+    ap.add_argument("--dprog", type=float, default=DPROG_TOL)
     ap.add_argument("--opposite-only", action="store_true",
                     help="restrict to pairs whose oracle actions differ; the rule counts "
                          "those, so this is the stricter reading of the same criteria")
@@ -105,7 +110,7 @@ def main() -> int:
             if roll[a] == roll[b]:
                 continue                                   # cross-rollout only
             dp, dq = abs(prog[a] - prog[b]), abs(qi[a] - qi[b])
-            if dp <= DPROG_TOL and dq >= DQI_MIN:
+            if dp <= args.dprog and dq >= DQI_MIN:
                 cands.append((dp, dq, a, b))
     cands.sort(key=lambda x: (x[0], -x[1]))                # greedy: tightest progress first
     used, pairs = set(), []
@@ -120,7 +125,7 @@ def main() -> int:
 
     print("=" * 78)
     print("MATCHED-PAIR TEST   cohort={}   dprog<={}  dQI>={}  opposite_only={}".format(
-        args.cohort, DPROG_TOL, DQI_MIN, args.opposite_only))
+        args.cohort, args.dprog, DQI_MIN, args.opposite_only))
     print("=" * 78)
     print("  conflict-set checkpoints        : {}".format(len(conf)))
     print("  candidate pairs before matching : {}".format(len(cands)))
@@ -160,7 +165,7 @@ def main() -> int:
 
     print("\n  scorable pairs per split : {}   (chance = 0.500)".format(ntest))
     print("\n  {:<20} {:>8} {:>7}  {:<6} {}".format("features", "mean", "sd", "sign", "per-split"))
-    out = {"cohort": args.cohort, "dprog_tol": DPROG_TOL, "dqi_min": DQI_MIN,
+    out = {"cohort": args.cohort, "dprog_tol": args.dprog, "dqi_min": DQI_MIN,
            "opposite_only": bool(args.opposite_only), "n_pairs": len(pairs),
            "n_opposite": int(sum(p["opposite"] for p in pairs)),
            "n_games": len({p["game"] for p in pairs}),
@@ -195,7 +200,8 @@ def main() -> int:
 
     os.makedirs("reports", exist_ok=True)
     tag = "opp" if args.opposite_only else "all"
-    p = "reports/matched_pairs_{}_{}_{}.json".format(cfg["run_id"], args.cohort, tag)
+    p = "reports/matched_pairs_{}_{}_{}_d{:03d}.json".format(
+        cfg["run_id"], args.cohort, tag, int(round(args.dprog * 100)))
     with open(p, "w") as fh:
         json.dump(out, fh, indent=2)
     print("\nwrote {}".format(p))

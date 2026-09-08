@@ -139,3 +139,42 @@ Recorded so the memo cannot quietly preserve it:
   story becomes a statement about estimation rather than about oversight.
 - If C is unsupported for sample-size reasons, the within-game claim is not made at
   all rather than made weakly.
+
+
+---
+
+## CORRECTION (appended 2026-09-08, after external verification)
+
+The original text above says this document was "written **before** the feasibility census
+returned," and the commit subject at `f1e78cb` repeats it. **That claim is not supportable
+and is withdrawn.** The peer session that ran the census timestamped its logs at
+`01:41:19.937Z` and `01:41:30.784Z`; `f1e78cb` is authored `01:41:57Z` — **27 to 38 seconds
+after**, not before.
+
+Two things could excuse it and neither is offered as a defence. Sub-minute gaps are inside
+plausible clock skew between two unsynchronised machines, and "written" and "committed" are
+different events. Neither is demonstrable, so the claim goes.
+
+**What is accurate:** the rule was committed **before any census output had reached me and
+before any pair was scored**. That ordering is visible in the session transcript — the census
+results arrived in a message delivered during the commit — but it rests on my own transcript,
+not on an independent timestamp, and should be described that way.
+
+**What actually protects this analysis is the form of the rule, not its timing.** The
+committed criterion is a *rule over the whole grid* — "the tightest tolerance yielding ≥ 50
+opposite-oracle pairs; if none does, C is reported unsupported" — not a cell selected from
+one. A rule of that shape constrains the choice even if the grid was already visible, and it
+is what forced the `dprog ≤ 0.15` selection and the finding that the 928 cohort fails
+outright. Indeed the rule *presupposes* a grid: one cannot pick "the tightest tolerance
+yielding ≥ 50" without a table of counts to apply it to.
+
+**Also corrected: the author dates I circulated for verification were four hours fast.** They
+were `-04:00` local times labelled `Z`. Correct UTC: `9d7a48d` 01:38:37, `f1e78cb` 01:41:57,
+`84f0bd8` 06:05:06, `b21f8f6` 06:19:06, `410bcdd` 06:25:54, `5e4d5ab` 06:26:38. Relative
+ordering is unaffected.
+
+**And a limit on the closure battery's freeze claim.** The push preceded any inspection *by
+me*, which is the sense in which the closure pre-registration is externally frozen. It did
+**not** demonstrably precede inspection by the executing session, which had already run and
+seen the Q2 output before the push landed. The supportable wording is "frozen before the
+analyst who reads it inspected the output," not "before any inspection by anyone."
