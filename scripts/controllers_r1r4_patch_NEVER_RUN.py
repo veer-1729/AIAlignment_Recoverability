@@ -314,24 +314,48 @@ def main() -> int:
         out["by_level"][nm] = rec
         print("  {:<20}".format(nm) + "".join(cells))
 
-    print("\n  MARGINAL CONTROL VALUE OF RECOVERABILITY, by risk level")
-    print("  (regret of R2b forecast-only minus regret of R4 stacked; positive = recoverability helps)")
-    print("  R2b is used rather than R2 because R2 cannot select quit at all, which would")
-    print("  make this contrast partly about the missing action rather than about Q_I.")
-    out["recoverability_value_by_level"] = {}
-    for lv in levels:
-        a = [d["regret_mean"] for d in per_seed_by_level["R2b_no_intervene"][float(lv)]]
-        b = [d["regret_mean"] for d in per_seed_by_level["R4_stacked"][float(lv)]]
-        if not a or not b:
-            continue
-        d = [x - y for x, y in zip(a, b)]
-        same = all(v > 0 for v in d) or all(v < 0 for v in d)
-        out["recoverability_value_by_level"][str(round(float(lv), 2))] = {
-            "delta_regret": float(np.mean(d)), "sd": float(np.std(d, ddof=1)),
-            "consistent": bool(same), "per_seed": [float(v) for v in d]}
-        print("    risk {:.2f}   {:>+8.3f}  sd {:.3f}  {:<5}  [{}]".format(
-            float(lv), float(np.mean(d)), float(np.std(d, ddof=1)),
-            "same" if same else "FLIPS", " ".join("{:+.3f}".format(v) for v in d)))
+    # Three contrasts per risk level, because they answer different questions and
+    # only the second is clean.
+    #
+    #   R2b -> R4  is confounded. R2b cannot select intervene AT ALL (its Qhat_I is
+    #              pinned to -1e9), so its regret is dominated by a missing action
+    #              rather than by missing information, at every level.
+    #   R1  -> R4  IS the recoverability question. Both controllers have all three
+    #              actions; they differ only in that R1 knows the continuation-risk
+    #              level and R4 knows observables plus predicted Q_C and Q_I.
+    #   R4  -> R5  is the same question for activations specifically.
+    out["value_by_level"] = {}
+    for lo, hi, label, note in (
+            ("R2b_no_intervene", "R4_stacked", "R2b->R4",
+             "CONFOUNDED: R2b has no intervene action; reported for completeness"),
+            ("R1_risk_only", "R4_stacked", "R1->R4",
+             "CLEAN: same action set, risk level vs full observable model"),
+            ("R4_stacked", "R5_whitebox", "R4->R5",
+             "CLEAN: same action set, observables vs observables+activations")):
+        print("\n  MARGINAL VALUE BY RISK LEVEL: {}   (positive = the richer one is better)".format(label))
+        print("  {}".format(note))
+        rec = {}
+        for lv in levels:
+            a = [d["regret_mean"] for d in per_seed_by_level[lo][float(lv)]]
+            b = [d["regret_mean"] for d in per_seed_by_level[hi][float(lv)]]
+            if not a or not b or len(a) != len(b):
+                print("    risk {:.2f}   -- not scorable in every split "
+                      "(a={} splits, b={})".format(float(lv), len(a), len(b)))
+                continue
+            d = [x - y for x, y in zip(a, b)]
+            same = all(v > 0 for v in d) or all(v < 0 for v in d)
+            rec[str(round(float(lv), 2))] = {
+                "delta_regret": float(np.mean(d)),
+                "sd": float(np.std(d, ddof=1)) if len(d) > 1 else 0.0,
+                "consistent": bool(same), "n_splits": len(d),
+                "per_seed": [float(v) for v in d]}
+            print("    risk {:.2f}   {:>+8.3f}  sd {:.3f}  {:<5}  n_splits={}  [{}]".format(
+                float(lv), float(np.mean(d)),
+                float(np.std(d, ddof=1)) if len(d) > 1 else 0.0,
+                "same" if same else "FLIPS", len(d),
+                " ".join("{:+.3f}".format(v) for v in d)))
+        out["value_by_level"][label] = rec
+    out["recoverability_value_by_level"] = out["value_by_level"].get("R1->R4", {})
 
     # ================= B report =================
     print("\n" + "#" * 78)
