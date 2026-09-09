@@ -42,6 +42,15 @@ and loss cannot be confounded. Layer 24 is primary because it was fixed before t
 all-layer sweep; 8 and 16 are secondary diagnostics and no conclusion may rest on
 choosing among them.
 
+AMENDMENT 2 (this version). The T=500 final-iterate run was VOIDED: the obs+act arm
+failed to converge at every layer in both cohorts while the obs arm converged cleanly,
+so the two arms were not fit to comparable quality and any difference between them
+confounded representation with optimiser adequacy -- in the direction that penalises
+the arm under test. The optimiser now returns the back-half-averaged iterate at
+T = 2000. Nothing else changes: same loss, same lambda grid, same splits, same layers,
+same cohorts, same decision rule. Outputs are written to a DIFFERENT filename so the
+voided run's artifacts are preserved.
+
     python scripts/decision_focused.py --config configs/scale.yaml --cohort all
 """
 from __future__ import annotations
@@ -63,7 +72,8 @@ from closure_baselines import fit_tfidf
 PRIMARY_LAYER = 24
 LAYERS = (8, 16, 24)
 LAMBDAS = (1e-4, 1e-3, 1e-2, 1e-1, 1e0, 1e1, 1e2)   # covers ALPHAS mapped to mean form
-ADAM_LR, ADAM_T = 0.01, 500
+ADAM_LR, ADAM_T = 0.01, 2000        # Amendment 2: T raised from 500
+AVERAGE_BACK_HALF = True            # Amendment 2: Polyak-Ruppert averaging
 N_BOOT = 2000
 
 
@@ -93,13 +103,26 @@ def regret_of(Qhat, Q):
 # ---------------------------------------------------------------------------
 # the model
 # ---------------------------------------------------------------------------
-def fit_spo(X, Q, lam, T=ADAM_T, lr=ADAM_LR, trace=False):
+def fit_spo(X, Q, lam, T=ADAM_T, lr=ADAM_LR, trace=False, average=None):
     """Linear Qhat_C, Qhat_I (quit fixed at 0), trained on SPO+ with full-batch Adam.
 
     Adam rather than a convex-rate subgradient schedule because the piecewise-linear
     objective plus a wide lambda grid makes a 1/(lambda t) step unusable at the small
     end. Convergence is not assumed: the objective at t = 0, T/2, T is returned so it
     can be audited, and a synthetic recovery test gates the whole script.
+
+    AMENDMENT 2. The first run of this script was VOIDED. SPO+ is piecewise linear, so
+    this is a subgradient method, and a constant step does not converge -- it orbits a
+    neighbourhood whose radius scales with the step. That is harmless at d = 26 and
+    ruinous at d = 3610, so the defect fell entirely on the obs+act arm: six wide-arm
+    fits across two cohorts and three layers all failed to reach, while all six
+    narrow-arm fits converged to four decimals. The returned iterate is now the MEAN
+    over the back half of the trajectory (Polyak-Ruppert), which has convergence
+    guarantees where the final iterate has none, and T is raised to 2000.
+
+    Averaging lives HERE rather than in the caller so that it applies inside the inner
+    CV folds as well as the refit. If lambda were selected on the wandering estimator
+    and then deployed on the averaged one, the selection would not match the model.
     """
     n, d = X.shape
     W = np.zeros((d, 2)); b = np.zeros(2)
@@ -108,6 +131,8 @@ def fit_spo(X, Q, lam, T=ADAM_T, lr=ADAM_LR, trace=False):
     b1, b2, eps = 0.9, 0.999, 1e-8
     zero = np.zeros((n, 1))
     traj = []
+    avg = AVERAGE_BACK_HALF if average is None else average
+    accW = np.zeros_like(W); accb = np.zeros_like(b); nacc = 0
     for t in range(1, T + 1):
         Qh = np.hstack([X @ W + b, zero])
         if trace and (t == 1 or t == T // 2 or t == T):
@@ -119,6 +144,14 @@ def fit_spo(X, Q, lam, T=ADAM_T, lr=ADAM_LR, trace=False):
         mb = b1 * mb + (1 - b1) * gb; vb = b2 * vb + (1 - b2) * gb ** 2
         W -= lr * (mW / (1 - b1 ** t)) / (np.sqrt(vW / (1 - b2 ** t)) + eps)
         b -= lr * (mb / (1 - b1 ** t)) / (np.sqrt(vb / (1 - b2 ** t)) + eps)
+        if avg and t > T // 2:
+            accW += W; accb += b; nacc += 1
+    if avg and nacc:
+        W, b = accW / nacc, accb / nacc
+        if trace:
+            Qh = np.hstack([X @ W + b, zero])
+            traj.append(("avg", float(spo_plus(Qh, Q).mean()
+                                      + 0.5 * lam * float((W ** 2).sum()))))
     return W, b, traj
 
 
@@ -207,6 +240,29 @@ def gates():
     base = float(regret_of(np.zeros_like(Qs), Qs).mean())
     check("optimiser recovers a realisable linear solution", r < 0.05 * base,
           "regret {:.4f} vs {:.4f} at zero-init, SPO+ {:.4f}".format(r, base, l))
+
+    # AMENDMENT 2 GATE. The gate above tests d=20 at lam=1e-6 and passed cleanly while
+    # the real d=3610 arm was failing at every layer -- it did not cover the regime it
+    # was meant to protect. This one runs the ACTUAL width, with correlated columns
+    # (real activations are strongly correlated; with iid columns the pathology largely
+    # vanishes at high lambda and the gate would be vacuous).
+    nw, dw = 1400, 3610
+    Z = rng.normal(size=(nw, 50)); B = rng.normal(size=(50, dw))
+    Xw = Z @ B + 0.3 * rng.normal(size=(nw, dw))
+    Xw = (Xw - Xw.mean(0)) / Xw.std(0)
+    Wtw = rng.normal(size=(dw, 2)) / np.sqrt(dw)
+    Qw = np.hstack([Xw @ Wtw, np.zeros((nw, 1))])
+    Qw[:, :2] += rng.normal(scale=0.5, size=(nw, 2))
+    fin_r, avg_r = [], []
+    for lamw in (1e-2, 1.0, 1e2):
+        Wf, bf, _ = fit_spo(Xw, Qw, lam=lamw, average=False)
+        Wa, ba, _ = fit_spo(Xw, Qw, lam=lamw, average=True)
+        fin_r.append(float(regret_of(predict_spo(Xw, Wf, bf), Qw).mean()))
+        avg_r.append(float(regret_of(predict_spo(Xw, Wa, ba), Qw).mean()))
+    check("AMD2 wide regime d=3610: averaging beats final iterate",
+          all(a <= f + 1e-9 for a, f in zip(avg_r, fin_r)),
+          "final " + "/".join("{:.4f}".format(v) for v in fin_r)
+          + "  averaged " + "/".join("{:.4f}".format(v) for v in avg_r))
     return ok
 
 
@@ -273,10 +329,16 @@ def main() -> int:
     print("DECISION-FOCUSED CONTROLLER   cohort={}   n={}   primary layer {}".format(
         args.cohort, len(keep), PRIMARY_LAYER))
     print("=" * 78)
-    print("  lambda grid {}   Adam lr {} T {}".format(LAMBDAS, ADAM_LR, ADAM_T))
+    print("  lambda grid {}   Adam lr {} T {}   back-half averaging {}".format(
+        LAMBDAS, ADAM_LR, ADAM_T, AVERAGE_BACK_HALF))
+    print("  AMENDMENT 2 RUN: the T=500 final-iterate run was voided for non-convergence")
+    print("  of the obs+act arm. Loss, grid, splits, layers and cohorts are unchanged.")
 
     out = {"cohort": args.cohort, "n": len(keep), "primary_layer": PRIMARY_LAYER,
-           "lambdas": list(LAMBDAS), "adam": {"lr": ADAM_LR, "T": ADAM_T}, "layers": {}}
+           "lambdas": list(LAMBDAS),
+           "adam": {"lr": ADAM_LR, "T": ADAM_T,
+                    "average_back_half": bool(AVERAGE_BACK_HALF)},
+           "amendment": 2, "layers": {}}
 
     for L in LAYERS:
         XA = np.hstack([F, ACT[L]])
@@ -321,9 +383,10 @@ def main() -> int:
                 preds[nm] = p
                 rec[nm]["lam"].append(lam)
                 if s == 0:
-                    print("  {:<16} seed0 lambda {:<8g} objective t=1/{}/{}: {}".format(
-                        nm, lam, ADAM_T // 2, ADAM_T,
-                        "  ".join("{:.4f}".format(v) for _, v in traj)))
+                    print("  {:<16} seed0 lambda {:<8g} obj t=1/{}/{} then AVERAGED"
+                          " (the returned iterate): {}".format(
+                              nm, lam, ADAM_T // 2, ADAM_T,
+                              "  ".join("{:.4f}".format(v) for _, v in traj)))
 
             # --- contextual reference, unmodified --------------------------------
             if all(len(t) for t in txt):
@@ -449,7 +512,7 @@ def main() -> int:
         out["layers"]["L{}".format(L)] = Lrec
 
     os.makedirs("reports", exist_ok=True)
-    p = "reports/decision_focused_{}_{}.json".format(cfg["run_id"], args.cohort)
+    p = "reports/decision_focused_v2avg_{}_{}.json".format(cfg["run_id"], args.cohort)
     with open(p, "w") as fh:
         json.dump(out, fh, indent=2)
     print("\nwrote {}".format(p))
