@@ -192,7 +192,7 @@ def gates():
     num = []
     for j in range(3):
         e = np.zeros((1, 3)); e[0, j] = 1e-6
-        num.append(float((spo_plus(Qha + e, Qa) - spo_plus(Qha - e, Qa)) / 2e-6))
+        num.append(float(((spo_plus(Qha + e, Qa) - spo_plus(Qha - e, Qa)) / 2e-6)[0]))
     check("analytic subgradient == finite difference",
           np.allclose(spo_plus_subgrad(Qha, Qa)[0], num, atol=1e-5))
 
